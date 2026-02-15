@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web2PDF - Documentation to PDF Converter</title>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: #f0f2f5;
+            color: #1a1a2e;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 720px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            color: #6b7280;
+            font-size: 1rem;
+        }
+
+        /* Card */
+        .card {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1), 0 1px 2px rgba(0,0,0,0.06);
+            padding: 32px;
+            margin-bottom: 24px;
+        }
+
+        /* Form */
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 6px;
+            font-size: 0.9rem;
+            color: #374151;
+        }
+
+        .form-group .help-text {
+            font-size: 0.8rem;
+            color: #9ca3af;
+            margin-top: 4px;
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 12px 16px;
+            font-size: 1rem;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .url-input:focus {
+            border-color: #2563eb;
+        }
+
+        .url-input::placeholder {
+            color: #9ca3af;
+        }
+
+        /* Advanced options */
+        .advanced-toggle {
+            background: none;
+            border: none;
+            color: #2563eb;
+            font-size: 0.85rem;
+            cursor: pointer;
+            padding: 4px 0;
+            margin-bottom: 12px;
+        }
+
+        .advanced-options {
+            display: none;
+            padding: 16px;
+            background: #f9fafb;
+            border-radius: 8px;
+            margin-bottom: 16px;
+        }
+
+        .advanced-options.show {
+            display: block;
+        }
+
+        .option-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 12px;
+        }
+
+        .option-row .form-group {
+            flex: 1;
+            margin-bottom: 0;
+        }
+
+        .option-input {
+            width: 100%;
+            padding: 8px 12px;
+            font-size: 0.9rem;
+            border: 1px solid #d1d5db;
+            border-radius: 6px;
+            outline: none;
+        }
+
+        .option-input:focus {
+            border-color: #2563eb;
+        }
+
+        /* Button */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            width: 100%;
+            padding: 14px 24px;
+            font-size: 1rem;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #2563eb;
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: #1d4ed8;
+        }
+
+        .btn-primary:disabled {
+            background: #93c5fd;
+            cursor: not-allowed;
+        }
+
+        .btn-success {
+            background: #059669;
+            color: #fff;
+        }
+
+        .btn-success:hover {
+            background: #047857;
+        }
+
+        /* Progress section */
+        .progress-section {
+            display: none;
+        }
+
+        .progress-section.active {
+            display: block;
+        }
+
+        .status-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .status-badge.crawling { background: #fef3c7; color: #92400e; }
+        .status-badge.converting { background: #dbeafe; color: #1e40af; }
+        .status-badge.completed { background: #d1fae5; color: #065f46; }
+        .status-badge.failed { background: #fee2e2; color: #991b1b; }
+        .status-badge.queued { background: #f3f4f6; color: #374151; }
+
+        .stats-row {
+            display: flex;
+            gap: 24px;
+            margin-bottom: 16px;
+        }
+
+        .stat {
+            flex: 1;
+            text-align: center;
+            padding: 12px;
+            background: #f9fafb;
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #2563eb;
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: #6b7280;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Progress bar */
+        .progress-bar-container {
+            width: 100%;
+            height: 6px;
+            background: #e5e7eb;
+            border-radius: 3px;
+            margin-bottom: 16px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: #2563eb;
+            border-radius: 3px;
+            transition: width 0.5s ease;
+            width: 0%;
+        }
+
+        .progress-bar.indeterminate {
+            width: 30%;
+            animation: indeterminate 1.5s ease-in-out infinite;
+        }
+
+        @keyframes indeterminate {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(400%); }
+        }
+
+        /* Log area */
+        .log-area {
+            max-height: 240px;
+            overflow-y: auto;
+            background: #1a1a2e;
+            color: #a5b4c8;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, monospace;
+            font-size: 0.8rem;
+            line-height: 1.6;
+        }
+
+        .log-entry {
+            padding: 2px 0;
+            word-break: break-all;
+        }
+
+        .log-entry .log-time {
+            color: #4b5563;
+            margin-right: 8px;
+        }
+
+        /* Download section */
+        .download-section {
+            display: none;
+            text-align: center;
+            padding: 24px;
+        }
+
+        .download-section.active {
+            display: block;
+        }
+
+        .download-icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+        }
+
+        .download-section h3 {
+            margin-bottom: 8px;
+        }
+
+        .download-section p {
+            color: #6b7280;
+            margin-bottom: 16px;
+            font-size: 0.9rem;
+        }
+
+        /* Error */
+        .error-message {
+            display: none;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            border-radius: 8px;
+            padding: 16px;
+            color: #991b1b;
+            margin-top: 16px;
+        }
+
+        .error-message.active {
+            display: block;
+        }
+
+        /* Spinner */
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #ffffff;
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Features section */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+            margin-top: 32px;
+        }
+
+        .feature {
+            background: #fff;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+
+        .feature h4 {
+            font-size: 0.9rem;
+            margin-bottom: 6px;
+            color: #1a1a2e;
+        }
+
+        .feature p {
+            font-size: 0.8rem;
+            color: #6b7280;
+            line-height: 1.5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Web2PDF</h1>
+            <p>Convert documentation websites to self-contained PDF files</p>
+        </div>
+
+        <!-- Input Form -->
+        <div class="card" id="formCard">
+            <form id="convertForm" onsubmit="return startConversion(event)">
+                <div class="form-group">
+                    <label for="urlInput">Documentation URL</label>
+                    <input
+                        type="url"
+                        id="urlInput"
+                        class="url-input"
+                        placeholder="https://docs.example.com/guide/"
+                        required
+                        autocomplete="url"
+                    >
+                    <div class="help-text">Enter the root URL of the documentation site to convert.</div>
+                </div>
+
+                <button type="button" class="advanced-toggle" onclick="toggleAdvanced()">
+                    Advanced options
+                </button>
+
+                <div class="advanced-options" id="advancedOptions">
+                    <div class="option-row">
+                        <div class="form-group">
+                            <label for="maxDepth">Max crawl depth</label>
+                            <input type="number" id="maxDepth" class="option-input" value="10" min="1" max="50">
+                        </div>
+                        <div class="form-group">
+                            <label for="delay">Request delay (sec)</label>
+                            <input type="number" id="delay" class="option-input" value="0.5" min="0.1" max="10" step="0.1">
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary" id="submitBtn">
+                    Convert to PDF
+                </button>
+            </form>
+
+            <div class="error-message" id="formError"></div>
+        </div>
+
+        <!-- Progress Card -->
+        <div class="card progress-section" id="progressSection">
+            <div class="status-header">
+                <span class="status-badge" id="statusBadge">Queued</span>
+                <span id="elapsedTime" style="font-size: 0.85rem; color: #6b7280;"></span>
+            </div>
+
+            <div class="stats-row">
+                <div class="stat">
+                    <div class="stat-value" id="pagesFound">0</div>
+                    <div class="stat-label">Pages Found</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-value" id="pagesProcessed">0</div>
+                    <div class="stat-label">Processed</div>
+                </div>
+            </div>
+
+            <div class="progress-bar-container">
+                <div class="progress-bar indeterminate" id="progressBar"></div>
+            </div>
+
+            <div class="log-area" id="logArea"></div>
+        </div>
+
+        <!-- Download Card -->
+        <div class="card download-section" id="downloadSection">
+            <div class="download-icon">&#128196;</div>
+            <h3>PDF Ready</h3>
+            <p id="downloadInfo">Your documentation has been converted successfully.</p>
+            <button class="btn btn-success" id="downloadBtn" onclick="downloadPdf()">
+                Download PDF
+            </button>
+            <br><br>
+            <button class="btn btn-primary" onclick="resetForm()" style="background: #6b7280;">
+                Convert Another
+            </button>
+        </div>
+
+        <!-- Error Card -->
+        <div class="card download-section" id="errorSection">
+            <div class="download-icon" style="color: #dc2626;">&#9888;</div>
+            <h3>Conversion Failed</h3>
+            <p id="errorInfo" style="color: #dc2626;"></p>
+            <button class="btn btn-primary" onclick="resetForm()">
+                Try Again
+            </button>
+        </div>
+
+        <!-- Features -->
+        <div class="features">
+            <div class="feature">
+                <h4>Self-Contained</h4>
+                <p>All internal doc pages become sections in the PDF with working cross-references.</p>
+            </div>
+            <div class="feature">
+                <h4>Smart Links</h4>
+                <p>Internal links navigate within the PDF. External links open in a browser.</p>
+            </div>
+            <div class="feature">
+                <h4>Table of Contents</h4>
+                <p>Auto-generated TOC with clickable entries for easy navigation.</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentJobId = null;
+        let eventSource = null;
+
+        function toggleAdvanced() {
+            const el = document.getElementById('advancedOptions');
+            el.classList.toggle('show');
+        }
+
+        function startConversion(event) {
+            event.preventDefault();
+
+            const url = document.getElementById('urlInput').value.trim();
+            if (!url) return false;
+
+            const maxDepth = parseInt(document.getElementById('maxDepth').value) || 10;
+            const delay = parseFloat(document.getElementById('delay').value) || 0.5;
+
+            // Disable form
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner"></span> Starting...';
+
+            // Hide previous results
+            document.getElementById('downloadSection').classList.remove('active');
+            document.getElementById('errorSection').classList.remove('active');
+            document.getElementById('formError').classList.remove('active');
+
+            // Show progress
+            document.getElementById('progressSection').classList.add('active');
+            document.getElementById('logArea').innerHTML = '';
+            document.getElementById('pagesFound').textContent = '0';
+            document.getElementById('pagesProcessed').textContent = '0';
+
+            fetch('/convert', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url, max_depth: maxDepth, delay }),
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    showFormError(data.error);
+                    resetButton();
+                    return;
+                }
+                currentJobId = data.job_id;
+                startStreaming(data.job_id);
+            })
+            .catch(err => {
+                showFormError('Failed to start conversion: ' + err.message);
+                resetButton();
+            });
+
+            return false;
+        }
+
+        function startStreaming(jobId) {
+            if (eventSource) {
+                eventSource.close();
+            }
+
+            eventSource = new EventSource(`/stream/${jobId}`);
+
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                updateProgress(data);
+
+                if (data.status === 'completed' || data.status === 'failed') {
+                    eventSource.close();
+                    eventSource = null;
+                    handleCompletion(data);
+                }
+            };
+
+            eventSource.onerror = function() {
+                // Fall back to polling if SSE fails
+                eventSource.close();
+                eventSource = null;
+                startPolling(jobId);
+            };
+        }
+
+        function startPolling(jobId) {
+            const poll = setInterval(() => {
+                fetch(`/status/${jobId}`)
+                    .then(r => r.json())
+                    .then(data => {
+                        updateProgress(data);
+                        if (data.status === 'completed' || data.status === 'failed') {
+                            clearInterval(poll);
+                            handleCompletion(data);
+                        }
+                    })
+                    .catch(() => {});
+            }, 2000);
+        }
+
+        function updateProgress(data) {
+            // Update badge
+            const badge = document.getElementById('statusBadge');
+            badge.textContent = data.status.charAt(0).toUpperCase() + data.status.slice(1);
+            badge.className = 'status-badge ' + data.status;
+
+            // Update stats
+            document.getElementById('pagesFound').textContent = data.pages_found;
+            document.getElementById('pagesProcessed').textContent = data.pages_processed;
+            document.getElementById('elapsedTime').textContent = formatTime(data.elapsed);
+
+            // Update progress bar
+            const bar = document.getElementById('progressBar');
+            if (data.status === 'converting' && data.pages_found > 0) {
+                bar.classList.remove('indeterminate');
+                bar.style.width = '80%';
+            } else if (data.status === 'completed') {
+                bar.classList.remove('indeterminate');
+                bar.style.width = '100%';
+            }
+
+            // Update log
+            const logArea = document.getElementById('logArea');
+            logArea.innerHTML = '';
+            (data.progress_messages || []).forEach(msg => {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `<span class="log-time">[${formatTime(msg.time)}]</span>${escapeHtml(msg.message)}`;
+                logArea.appendChild(entry);
+            });
+            logArea.scrollTop = logArea.scrollHeight;
+        }
+
+        function handleCompletion(data) {
+            resetButton();
+
+            if (data.status === 'completed') {
+                document.getElementById('downloadSection').classList.add('active');
+                document.getElementById('downloadInfo').textContent =
+                    `${data.pages_found} pages converted in ${formatTime(data.elapsed)}`;
+            } else {
+                document.getElementById('errorSection').classList.add('active');
+                document.getElementById('errorInfo').textContent =
+                    data.error || 'An unknown error occurred.';
+            }
+        }
+
+        function downloadPdf() {
+            if (currentJobId) {
+                window.location.href = `/download/${currentJobId}`;
+            }
+        }
+
+        function resetForm() {
+            document.getElementById('progressSection').classList.remove('active');
+            document.getElementById('downloadSection').classList.remove('active');
+            document.getElementById('errorSection').classList.remove('active');
+            document.getElementById('formError').classList.remove('active');
+            resetButton();
+            currentJobId = null;
+
+            // Reset progress bar
+            const bar = document.getElementById('progressBar');
+            bar.classList.add('indeterminate');
+            bar.style.width = '';
+        }
+
+        function resetButton() {
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = 'Convert to PDF';
+        }
+
+        function showFormError(message) {
+            const el = document.getElementById('formError');
+            el.textContent = message;
+            el.classList.add('active');
+            document.getElementById('progressSection').classList.remove('active');
+        }
+
+        function formatTime(seconds) {
+            if (seconds < 60) return seconds.toFixed(1) + 's';
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return m + 'm ' + s + 's';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>
