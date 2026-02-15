@@ -2,40 +2,55 @@
 PDF Converter module for the Web-to-PDF Documentation Crawler.
 
 This module handles:
-- Converting HTML content to PDF using xhtml2pdf (cross-platform, no external dependencies)
-- Merging multiple PDFs into a single document
-- Adding page numbers and table of contents
-- Styling the output for optimal readability
+- Converting HTML content to PDF using WeasyPrint (preserves hyperlinks)
+- Building a single combined HTML document from all crawled pages
+- Rewriting internal links to PDF-internal anchors (self-contained document)
+- Keeping external links as clickable hyperlinks in the PDF
+- Adding table of contents with PDF bookmarks
 """
 
-import io
+import hashlib
 import logging
+import re
 from pathlib import Path
-from typing import List, Optional
-from dataclasses import dataclass
+from typing import List, Dict, Optional, Tuple
+from urllib.parse import urlparse, urljoin, urldefrag
 
-from xhtml2pdf import pisa
-from pypdf import PdfWriter, PdfReader
+from bs4 import BeautifulSoup, Tag
+from weasyprint import HTML
 
 from config import CrawlerConfig
-from crawler import CrawledPage
 
 logger = logging.getLogger(__name__)
 
 
-# Default CSS for PDF styling
-DEFAULT_PDF_CSS = """
+# CSS for the combined PDF document
+PDF_CSS = """
 @page {
     size: A4;
-    margin: 2cm;
+    margin: 2cm 2cm 2.5cm 2cm;
+    @bottom-center {
+        content: counter(page);
+        font-size: 9pt;
+        color: #666;
+    }
 }
 
 /* Base typography */
 body {
     font-family: Helvetica, Arial, sans-serif;
     font-size: 10pt;
-    line-height: 1.5;
+    line-height: 1.6;
     color: #333;
+}
+
+/* Page sections */
+.doc-page {
+    page-break-before: always;
+}
+
+.doc-page:first-child {
+    page-break-before: avoid;
 }
 
 /* Headings */
@@ -48,7 +63,7 @@ h1, h2, h3, h4, h5, h6 {
 
 h1 {
     font-size: 20pt;
-    border-bottom: 2px solid #e0e0e0;
+    border-bottom: 2px solid #2563eb;
     padding-bottom: 0.3em;
 }
 
@@ -62,35 +77,81 @@ h3 { font-size: 13pt; }
 h4 { font-size: 11pt; }
 h5, h6 { font-size: 10pt; }
 
+/* Page title header */
+.page-title {
+    font-size: 20pt;
+    color: #1a1a1a;
+    border-bottom: 2px solid #2563eb;
+    padding-bottom: 0.3em;
+    margin-top: 0;
+    margin-bottom: 0.8em;
+}
+
+/* Source URL annotation */
+.page-source-url {
+    font-size: 8pt;
+    color: #999;
+    margin-bottom: 1em;
+    word-break: break-all;
+}
+
 /* Code styling */
 pre, code {
-    font-family: Courier, monospace;
+    font-family: "Courier New", Courier, monospace;
     font-size: 9pt;
     background-color: #f6f8fa;
 }
 
 code {
     padding: 2px 4px;
+    border-radius: 3px;
 }
 
 pre {
-    padding: 10px;
+    padding: 12px;
     border: 1px solid #e0e0e0;
+    border-radius: 4px;
     page-break-inside: avoid;
     white-space: pre-wrap;
     word-wrap: break-word;
+    overflow-wrap: break-word;
+}
+
+pre code {
+    padding: 0;
+    background: none;
 }
 
 /* Links */
 a {
-    color: #0366d6;
+    color: #2563eb;
     text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Internal PDF links get a subtle indicator */
+a.internal-link {
+    color: #2563eb;
+}
+
+/* External links get a visual indicator */
+a.external-link {
+    color: #0366d6;
+}
+
+a.external-link::after {
+    content: " ↗";
+    font-size: 7pt;
+    vertical-align: super;
 }
 
 /* Lists */
 ul, ol {
     padding-left: 20px;
-    margin: 10px 0;
+    margin: 8px 0;
 }
 
 li {
@@ -103,6 +164,7 @@ table {
     width: 100%;
     margin: 10px 0;
     page-break-inside: avoid;
+    font-size: 9pt;
 }
 
 th, td {
@@ -116,334 +178,180 @@ th {
     font-weight: bold;
 }
 
+tr:nth-child(even) {
+    background-color: #fafafa;
+}
+
 /* Images */
 img {
     max-width: 100%;
     height: auto;
 }
 
-/* Blockquotes */
+/* Blockquotes / admonitions */
 blockquote {
-    border-left: 3px solid #ddd;
+    border-left: 4px solid #2563eb;
     margin: 10px 0;
-    padding: 5px 15px;
-    color: #666;
-    background-color: #f9f9f9;
+    padding: 8px 16px;
+    color: #555;
+    background-color: #f8f9fa;
 }
 
-/* Page break utilities */
-.page-break {
-    page-break-before: always;
-}
-
-/* Section divider */
-.section-divider {
+/* Horizontal rules */
+hr {
     border: none;
-    border-top: 1px solid #ccc;
+    border-top: 1px solid #e0e0e0;
     margin: 20px 0;
 }
 
+/* TOC styling */
+.toc-page {
+    page-break-after: always;
+}
+
+.toc-page h1 {
+    font-size: 24pt;
+    border-bottom: 3px solid #2563eb;
+    margin-bottom: 1em;
+}
+
+.toc-entry {
+    display: block;
+    padding: 4px 0;
+    border-bottom: 1px dotted #ddd;
+    text-decoration: none;
+    color: #333;
+}
+
+.toc-entry:hover {
+    color: #2563eb;
+}
+
+.toc-entry .toc-title {
+    display: inline;
+}
+
 /* Navigation elements - hide in PDF */
-nav, .sidebar, .navigation, .toc, .breadcrumb {
-    display: none;
+nav, .sidebar, .navigation, .toc, .breadcrumb,
+.edit-link, .page-nav, .edit-this-page, .last-updated {
+    display: none !important;
 }
 """
 
 
-@dataclass
-class PDFPage:
+def _url_to_anchor_id(url: str) -> str:
     """
-    Represents a single PDF page generated from HTML content.
+    Generate a stable, unique anchor ID from a URL.
 
-    Attributes:
-        title: The page title.
-        pdf_bytes: The PDF content as bytes.
-        page_count: Number of pages in this PDF section.
+    Uses a short hash of the normalized URL to create valid HTML IDs.
+
+    Args:
+        url: The URL to create an anchor for.
+
+    Returns:
+        A valid HTML anchor ID string like 'page-a1b2c3d4'.
     """
-    title: str
-    pdf_bytes: bytes
-    page_count: int
+    # Remove fragment
+    url_clean, _ = urldefrag(url)
+    # Normalize: strip trailing slash, lowercase
+    url_clean = url_clean.rstrip("/").lower()
+    # Create a short hash
+    url_hash = hashlib.md5(url_clean.encode()).hexdigest()[:8]
+    return f"page-{url_hash}"
 
 
-class HTMLToPDFConverter:
+class LinkRewriter:
     """
-    Convert HTML content to PDF using xhtml2pdf.
+    Rewrites links in HTML content to create a self-contained PDF.
 
-    Handles the conversion of individual pages and provides
-    consistent styling across all pages.
+    Internal links (same doc domain) → #anchor references within the PDF.
+    External links → preserved as clickable hyperlinks.
     """
 
-    def __init__(self, config: CrawlerConfig):
+    def __init__(self, base_url: str, crawled_urls: set):
         """
-        Initialize the HTML to PDF converter.
+        Initialize the link rewriter.
 
         Args:
-            config: The crawler configuration.
+            base_url: The base documentation URL.
+            crawled_urls: Set of all URLs that were crawled (normalized).
         """
-        self.config = config
+        self.base_url = base_url
+        self.crawled_urls = crawled_urls
+        self.base_domain = urlparse(base_url).netloc.lower().replace("www.", "")
 
-    def convert_page(self, page: CrawledPage, base_url: str) -> Optional[PDFPage]:
+        # Build URL → anchor mapping for all crawled pages
+        self.url_to_anchor: Dict[str, str] = {}
+        for url in crawled_urls:
+            self.url_to_anchor[self._normalize_for_lookup(url)] = _url_to_anchor_id(url)
+
+    def _normalize_for_lookup(self, url: str) -> str:
+        """Normalize a URL for lookup in the anchor map."""
+        url_clean, _ = urldefrag(url)
+        return url_clean.rstrip("/").lower()
+
+    def _is_internal(self, url: str) -> bool:
+        """Check if a URL belongs to the same documentation domain."""
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower().replace("www.", "")
+        return domain == self.base_domain
+
+    def rewrite_links(self, html_content: str, page_url: str) -> str:
         """
-        Convert a single crawled page to PDF.
+        Rewrite all links in HTML content.
+
+        Internal links to crawled pages → #anchor-id
+        Internal links to uncrawled pages → kept as absolute URLs
+        External links → kept as-is with external-link class
 
         Args:
-            page: The crawled page to convert.
-            base_url: The base URL for resolving relative resources.
+            html_content: The HTML content to process.
+            page_url: The URL of the page (for resolving relative links).
 
         Returns:
-            A PDFPage object, or None if conversion failed.
+            HTML with rewritten links.
         """
-        try:
-            # Wrap content in a complete HTML document with styling
-            html_content = self._wrap_content(page)
+        soup = BeautifulSoup(html_content, "html.parser")
 
-            # Create PDF using xhtml2pdf
-            pdf_buffer = io.BytesIO()
+        for anchor in soup.find_all("a", href=True):
+            href = anchor.get("href", "")
 
-            # Convert HTML to PDF
-            pisa_status = pisa.CreatePDF(
-                src=html_content,
-                dest=pdf_buffer,
-                encoding='utf-8',
-            )
+            # Skip empty/special hrefs
+            if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
+                continue
 
-            if pisa_status.err:
-                logger.warning(f"PDF conversion had errors for {page.url}")
+            # Resolve relative URLs to absolute
+            resolved = urljoin(page_url, href)
 
-            pdf_buffer.seek(0)
-            pdf_content = pdf_buffer.read()
+            if self._is_internal(resolved):
+                # Check if this internal URL was crawled
+                lookup_key = self._normalize_for_lookup(resolved)
+                if lookup_key in self.url_to_anchor:
+                    # Rewrite to internal PDF anchor
+                    anchor["href"] = f"#{self.url_to_anchor[lookup_key]}"
+                    anchor["class"] = anchor.get("class", []) + ["internal-link"]
+                else:
+                    # Internal but not crawled - keep as absolute URL
+                    anchor["href"] = resolved
+                    anchor["class"] = anchor.get("class", []) + ["external-link"]
+            else:
+                # External link - keep as absolute URL
+                anchor["href"] = resolved
+                anchor["class"] = anchor.get("class", []) + ["external-link"]
 
-            # Count pages
-            try:
-                reader = PdfReader(io.BytesIO(pdf_content))
-                page_count = len(reader.pages)
-            except Exception:
-                page_count = 1
-
-            logger.info(f"Converted: {page.title} ({page_count} pages)")
-
-            return PDFPage(
-                title=page.title,
-                pdf_bytes=pdf_content,
-                page_count=page_count,
-            )
-
-        except Exception as e:
-            logger.error(f"Failed to convert {page.url}: {e}")
-            return None
-
-    def _wrap_content(self, page: CrawledPage) -> str:
-        """
-        Wrap extracted content in a complete HTML document.
-
-        Args:
-            page: The crawled page.
-
-        Returns:
-            Complete HTML document string.
-        """
-        # Escape title for HTML
-        safe_title = (page.title
-                      .replace("&", "&amp;")
-                      .replace("<", "&lt;")
-                      .replace(">", "&gt;"))
-
-        return f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>{safe_title}</title>
-            <style>
-            {DEFAULT_PDF_CSS}
-            </style>
-        </head>
-        <body>
-            <article>
-                <h1>{safe_title}</h1>
-                {page.extracted_content}
-            </article>
-        </body>
-        </html>
-        """
-
-
-class PDFMerger:
-    """
-    Merge multiple PDF documents into a single file.
-
-    Handles combining individual page PDFs with optional
-    table of contents and page numbering.
-    """
-
-    def __init__(self, config: CrawlerConfig):
-        """
-        Initialize the PDF merger.
-
-        Args:
-            config: The crawler configuration.
-        """
-        self.config = config
-
-    def merge(
-        self,
-        pdf_pages: List[PDFPage],
-        output_path: str,
-        add_toc: bool = True,
-    ) -> bool:
-        """
-        Merge multiple PDF pages into a single document.
-
-        Args:
-            pdf_pages: List of PDF pages to merge.
-            output_path: Path for the output PDF file.
-            add_toc: Whether to add a table of contents.
-
-        Returns:
-            True if merge was successful, False otherwise.
-        """
-        if not pdf_pages:
-            logger.error("No pages to merge")
-            return False
-
-        try:
-            writer = PdfWriter()
-
-            # Track page numbers for TOC
-            current_page = 1
-            toc_entries = []
-
-            # Add each PDF to the merged document
-            for pdf_page in pdf_pages:
-                try:
-                    reader = PdfReader(io.BytesIO(pdf_page.pdf_bytes))
-
-                    # Record TOC entry
-                    toc_entries.append({
-                        "title": pdf_page.title,
-                        "page": current_page,
-                    })
-
-                    # Add all pages from this PDF
-                    for pdf_pg in reader.pages:
-                        writer.add_page(pdf_pg)
-
-                    current_page += pdf_page.page_count
-                except Exception as e:
-                    logger.warning(f"Failed to add page '{pdf_page.title}': {e}")
-                    continue
-
-            # Generate and prepend TOC if requested
-            if add_toc and len(toc_entries) > 1:
-                toc_pdf = self._generate_toc(toc_entries)
-                if toc_pdf:
-                    try:
-                        toc_reader = PdfReader(io.BytesIO(toc_pdf))
-                        # Insert TOC at the beginning
-                        for i, toc_pg in enumerate(toc_reader.pages):
-                            writer.insert_page(toc_pg, index=i)
-                    except Exception as e:
-                        logger.warning(f"Failed to add TOC: {e}")
-
-            # Write the merged PDF
-            output_file = Path(output_path)
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-
-            with open(output_file, "wb") as f:
-                writer.write(f)
-
-            total_pages = len(writer.pages)
-            logger.info(
-                f"Created merged PDF: {output_path} "
-                f"({total_pages} pages, {len(pdf_pages)} sections)"
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to merge PDFs: {e}")
-            return False
-
-    def _generate_toc(self, entries: List[dict]) -> Optional[bytes]:
-        """
-        Generate a table of contents PDF page.
-
-        Args:
-            entries: List of TOC entries with title and page number.
-
-        Returns:
-            PDF bytes for the TOC page, or None if generation failed.
-        """
-        try:
-            # Build TOC HTML
-            toc_items = []
-            for entry in entries:
-                # Escape title for HTML
-                safe_title = (entry["title"]
-                              .replace("&", "&amp;")
-                              .replace("<", "&lt;")
-                              .replace(">", "&gt;"))
-                toc_items.append(
-                    f'<tr>'
-                    f'<td style="border:none; padding: 5px 0;">{safe_title}</td>'
-                    f'<td style="border:none; padding: 5px 0; text-align:right; width:50px;">{entry["page"]}</td>'
-                    f'</tr>'
-                )
-
-            toc_html = f"""
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>Table of Contents</title>
-                <style>
-                    @page {{
-                        size: A4;
-                        margin: 2cm;
-                    }}
-                    body {{
-                        font-family: Helvetica, Arial, sans-serif;
-                        font-size: 10pt;
-                        line-height: 1.6;
-                    }}
-                    h1 {{
-                        font-size: 20pt;
-                        border-bottom: 2px solid #333;
-                        padding-bottom: 10px;
-                        margin-bottom: 20px;
-                    }}
-                    table {{
-                        width: 100%;
-                        border-collapse: collapse;
-                    }}
-                    tr {{
-                        border-bottom: 1px dotted #ccc;
-                    }}
-                </style>
-            </head>
-            <body>
-                <h1>Table of Contents</h1>
-                <table>
-                    {''.join(toc_items)}
-                </table>
-            </body>
-            </html>
-            """
-
-            pdf_buffer = io.BytesIO()
-            pisa.CreatePDF(src=toc_html, dest=pdf_buffer, encoding='utf-8')
-            pdf_buffer.seek(0)
-            return pdf_buffer.read()
-
-        except Exception as e:
-            logger.warning(f"Failed to generate TOC: {e}")
-            return None
+        return str(soup)
 
 
 class DocumentationPDFGenerator:
     """
-    High-level class that orchestrates the entire PDF generation process.
+    Generate a self-contained PDF from crawled documentation pages.
 
-    Combines crawling, conversion, and merging into a simple interface.
+    Builds a single HTML document with:
+    - Each page as a section with an anchor ID
+    - Internal links rewritten to #anchor references
+    - External links preserved as clickable hyperlinks
+    - Table of contents with links to each section
+    - Proper PDF bookmarks via WeasyPrint
     """
 
     def __init__(self, config: CrawlerConfig):
@@ -454,12 +362,10 @@ class DocumentationPDFGenerator:
             config: The crawler configuration.
         """
         self.config = config
-        self.converter = HTMLToPDFConverter(config)
-        self.merger = PDFMerger(config)
 
     def generate(
         self,
-        pages: List[CrawledPage],
+        pages: list,
         output_path: Optional[str] = None,
         add_toc: bool = True,
     ) -> bool:
@@ -467,8 +373,8 @@ class DocumentationPDFGenerator:
         Generate a merged PDF from crawled pages.
 
         Args:
-            pages: List of crawled pages to convert.
-            output_path: Output file path (uses config default if not provided).
+            pages: List of CrawledPage objects to convert.
+            output_path: Output file path.
             add_toc: Whether to add a table of contents.
 
         Returns:
@@ -476,18 +382,169 @@ class DocumentationPDFGenerator:
         """
         output_path = output_path or self.config.output_filename
 
-        logger.info(f"Converting {len(pages)} pages to PDF...")
-
-        # Convert each page to PDF
-        pdf_pages = []
-        for page in pages:
-            pdf_page = self.converter.convert_page(page, self.config.base_url)
-            if pdf_page:
-                pdf_pages.append(pdf_page)
-
-        if not pdf_pages:
-            logger.error("No pages were successfully converted")
+        if not pages:
+            logger.error("No pages to convert")
             return False
 
-        # Merge all PDFs
-        return self.merger.merge(pdf_pages, output_path, add_toc=add_toc)
+        logger.info(f"Generating PDF from {len(pages)} pages...")
+
+        try:
+            # Collect all crawled URLs for link rewriting
+            crawled_urls = {page.url for page in pages}
+            rewriter = LinkRewriter(self.config.base_url, crawled_urls)
+
+            # Build the combined HTML document
+            combined_html = self._build_combined_html(pages, rewriter, add_toc)
+
+            # Generate PDF using WeasyPrint
+            logger.info("Rendering PDF with WeasyPrint...")
+            html_doc = HTML(
+                string=combined_html,
+                base_url=self.config.base_url,
+            )
+            html_doc.write_pdf(output_path)
+
+            output_file = Path(output_path)
+            size_mb = output_file.stat().st_size / (1024 * 1024)
+            logger.info(
+                f"PDF generated: {output_path} ({size_mb:.1f} MB, {len(pages)} sections)"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to generate PDF: {e}")
+            return False
+
+    def _build_combined_html(
+        self,
+        pages: list,
+        rewriter: LinkRewriter,
+        add_toc: bool,
+    ) -> str:
+        """
+        Build a single HTML document combining all pages.
+
+        Each page becomes a section with an anchor ID for internal linking.
+
+        Args:
+            pages: List of CrawledPage objects.
+            rewriter: LinkRewriter instance for rewriting links.
+            add_toc: Whether to include a table of contents.
+
+        Returns:
+            Complete HTML document string.
+        """
+        sections = []
+
+        # Build page entries for TOC
+        toc_entries = []
+        for page in pages:
+            anchor_id = _url_to_anchor_id(page.url)
+            safe_title = self._escape_html(page.title)
+            toc_entries.append((anchor_id, safe_title))
+
+        # Generate TOC section
+        if add_toc and len(pages) > 1:
+            toc_html = self._build_toc_html(toc_entries)
+            sections.append(toc_html)
+
+        # Generate each page section
+        for i, page in enumerate(pages):
+            anchor_id = _url_to_anchor_id(page.url)
+            safe_title = self._escape_html(page.title)
+
+            # Rewrite links in the content
+            rewritten_content = rewriter.rewrite_links(
+                page.extracted_content, page.url
+            )
+
+            # Make images absolute so WeasyPrint can fetch them
+            rewritten_content = self._make_images_absolute(
+                rewritten_content, page.url
+            )
+
+            section = f"""
+            <div class="doc-page" id="{anchor_id}">
+                <h1 class="page-title">{safe_title}</h1>
+                <div class="page-source-url">{self._escape_html(page.url)}</div>
+                <div class="page-content">
+                    {rewritten_content}
+                </div>
+            </div>
+            """
+            sections.append(section)
+            logger.info(f"  Processed ({i+1}/{len(pages)}): {page.title}")
+
+        # Combine into final HTML
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Documentation</title>
+    <style>
+    {PDF_CSS}
+    </style>
+</head>
+<body>
+    {chr(10).join(sections)}
+</body>
+</html>"""
+
+    def _build_toc_html(self, entries: list) -> str:
+        """
+        Build the table of contents HTML section.
+
+        Args:
+            entries: List of (anchor_id, title) tuples.
+
+        Returns:
+            HTML string for the TOC section.
+        """
+        toc_links = []
+        for anchor_id, title in entries:
+            toc_links.append(
+                f'<a class="toc-entry" href="#{anchor_id}">'
+                f'<span class="toc-title">{title}</span>'
+                f'</a>'
+            )
+
+        return f"""
+        <div class="toc-page">
+            <h1>Table of Contents</h1>
+            <div class="toc-list">
+                {''.join(toc_links)}
+            </div>
+        </div>
+        """
+
+    def _make_images_absolute(self, html_content: str, page_url: str) -> str:
+        """
+        Convert relative image URLs to absolute URLs.
+
+        This allows WeasyPrint to fetch and embed images in the PDF.
+
+        Args:
+            html_content: HTML content with possibly relative image URLs.
+            page_url: The page URL for resolving relative paths.
+
+        Returns:
+            HTML with absolute image URLs.
+        """
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        for img in soup.find_all("img", src=True):
+            src = img.get("src", "")
+            if src and not src.startswith(("http://", "https://", "data:")):
+                img["src"] = urljoin(page_url, src)
+
+        return str(soup)
+
+    @staticmethod
+    def _escape_html(text: str) -> str:
+        """Escape special HTML characters in text."""
+        return (
+            text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+        )

@@ -114,6 +114,19 @@ Examples:
         help="Use Playwright for JavaScript-rendered pages (requires: pip install playwright && playwright install chromium)",
     )
 
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Launch the web interface instead of CLI mode",
+    )
+
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=5000,
+        help="Port for the web server (default: 5000)",
+    )
+
     return parser.parse_args()
 
 
@@ -252,6 +265,18 @@ def main() -> int:
     # Set logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
+
+    # Web mode: launch Flask server
+    if args.web:
+        from app import app as flask_app
+        logger.info(f"Starting Web2PDF web interface on http://localhost:{args.port}")
+        flask_app.run(host="0.0.0.0", port=args.port, debug=args.verbose)
+        return 0
+
+    # CLI mode: require URL
+    if not args.url:
+        logger.error("URL is required in CLI mode. Use --url or --web for the web interface.")
+        return 1
 
     # Create configuration
     config = create_config_from_args(args)
